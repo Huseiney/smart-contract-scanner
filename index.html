@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Contract Scanner</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    body { font-family: 'Segoe UI', sans-serif; }
+  </style>
+</head>
+<body class="bg-gray-900 text-white min-h-screen flex flex-col items-center p-4">
+  <header class="w-full max-w-4xl mb-6">
+    <h1 class="text-3xl font-bold text-center text-green-400">Contract Scanner</h1>
+  </header>
+
+  <main class="w-full max-w-4xl">
+    <div class="bg-gray-800 rounded-xl p-6 shadow-md">
+      <label class="block mb-2 text-sm font-medium">Contract Address:</label>
+      <input id="address" type="text" placeholder="0x..." class="w-full p-2 rounded bg-gray-700 text-white focus:outline-none mb-4" />
+      <button onclick="scanContract()" class="bg-green-500 hover:bg-green-600 px-4 py-2 rounded">Scan</button>
+    </div>
+
+    <div id="result" class="mt-6 space-y-4"></div>
+  </main>
+
+  <script>
+    const SIDRA_RPC = 'https://node.sidrachain.com';
+
+    async function scanContract() {
+      const address = document.getElementById('address').value.trim();
+      const resultEl = document.getElementById('result');
+      resultEl.innerHTML = '<p class="text-yellow-400">Scanning...</p>';
+
+      if (!/^0x[a-fA-F0-9]{40}$/.test(address)) {
+        resultEl.innerHTML = '<p class="text-red-500">Invalid contract address.</p>';
+        return;
+      }
+
+      // Fetch bytecode
+      const bytecodeRes = await fetch(SIDRA_RPC, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          method: 'eth_getCode',
+          params: [address, 'latest'],
+          id: 1,
+        }),
+      });
+      const bytecodeData = await bytecodeRes.json();
+      const bytecode = bytecodeData.result;
+
+      if (!bytecode || bytecode === '0x') {
+        resultEl.innerHTML = '<p class="text-red-500">No contract found at this address.</p>';
+        return;
+      }
+
+      // Bytecode size and verification status
+      const bytecodeSize = bytecode.length / 2;
+      const isVerified = bytecodeSize > 300 ? 'Possibly Verified (based on size)' : 'Unverified';
+
+      // Risk checks
+      const risks = [];
+      if (bytecode.includes('f2')) risks.push('Uses low-level calls (delegatecall/staticcall)');
+      if (bytecode.includes('63')) risks.push('Contains unknown function selectors');
+
+      // Show result
+      resultEl.innerHTML = `
+        <div class="bg-gray-800 rounded p-4">
+          <p><strong>Bytecode size:</strong> ${bytecodeSize} bytes</p>
+          <p><strong>Status:</strong> ${isVerified}</p>
+          <p><strong>Explorer:</strong> <a class="text-blue-400 underline" href="https://ledger.sidrachain.com/address/${address}" target="_blank">View on Sidra Explorer</a></p>
+          <h2 class="text-lg font-bold mt-4">Risk Check:</h2>
+          ${risks.length > 0 ? `<ul class="list-disc pl-6 text-yellow-300">${risks.map(r => `<li>${r}</li>`).join('')}</ul>` : '<p class="text-green-400">No obvious risks detected.</p>'}
+        </div>
+      `;
+    }
+  </script>
+</body>
+</html>
