@@ -5,41 +5,44 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Contract Scanner</title>
   <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 </head>
 <body class="bg-gray-900 text-white font-sans">
   <header class="text-center py-6 bg-gray-800">
     <h1 class="text-4xl font-bold">🛡️ Contract Scanner</h1>
-    <p class="text-sm mt-2">Scan Sidra contracts for risks, verification, and honeypot behavior</p>
+    <p class="text-sm mt-2">Scan Sidra contracts for risks, verification, honeypots, and features</p>
   </header>
 
-  <main class="max-w-3xl mx-auto p-6">
+  <main class="max-w-4xl mx-auto p-6">
     <div class="mb-6">
-      <label for="addresses" class="block mb-2 text-lg">Enter Contract Addresses (comma or newline separated):</label>
-      <textarea id="addresses" class="w-full p-3 rounded text-black h-40" placeholder="0x..."></textarea>
-      <button onclick="scanContracts()" class="mt-4 bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-6 rounded">Scan</button>
+      <label for="address" class="block mb-2 text-lg">Enter Contract Address(es):</label>
+      <textarea id="address" class="w-full p-3 rounded text-black" rows="4" placeholder="Enter one or more contract addresses separated by comma or newline"></textarea>
+      <button onclick="startScan()" class="mt-4 bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-6 rounded">Scan</button>
+      <button onclick="exportText()" class="mt-4 ml-2 bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-6 rounded">Copy Report</button>
     </div>
 
     <div id="results" class="space-y-6"></div>
-    <div class="mt-4">
-      <button onclick="exportToPDF()" class="bg-green-600 hover:bg-green-700 text-white py-2 px-6 rounded">Export to PDF</button>
-      <button onclick="copyToClipboard()" class="bg-gray-600 hover:bg-gray-700 text-white py-2 px-6 rounded">Copy to Clipboard</button>
-    </div>
   </main>
 
   <script>
     const SIDRA_RPC = 'https://node.sidrachain.com';
     const EXPLORER_URL = 'https://ledger.sidrachain.com';
-    
-    async function scanContracts() {
-      const addresses = document.getElementById('addresses').value.trim().split(/,|\n/);
-      const results = document.getElementById('results');
-      results.innerHTML = '<p class="text-yellow-400">Scanning...</p>';
 
-      results.innerHTML = ''; // Clear previous results
-      for (const address of addresses) {
-        await scanContract(address.trim(), results);
-      }
+    function parseAddresses(input) {
+      return input
+        .split(/[\s,]+/)
+        .map(addr => addr.trim())
+        .filter(addr => addr.startsWith('0x') && addr.length === 42);
+    }
+
+    function getFunctionSelectors(bytecode) {
+      return {
+        mintable: bytecode.includes('40c10f19'),
+        burnable: bytecode.includes('42966c68'),
+        pause: bytecode.includes('8456cb59'),
+        unpause: bytecode.includes('3f4ba83a'),
+        permit: bytecode.includes('d505accf'),
+        blacklist: bytecode.includes('7f5c770a') || bytecode.includes('dd62ed3e'),
+      };
     }
 
     async function scanContract(address, results) {
@@ -61,79 +64,65 @@
         const bytecode = codeData.result;
 
         if (!bytecode || bytecode === '0x') {
-          results.innerHTML += `<p class="text-red-400">Address ${address} is not a contract.</p>`;
+          results.innerHTML += `<p class="text-red-400">${address} is not a contract.</p>`;
           return;
         }
 
         const size = bytecode.length / 2;
         const delegateCall = bytecode.includes('f2');
         const selfDestruct = bytecode.includes('ff');
-        const upgradeableProxy = bytecode.includes('proxy') || bytecode.includes('admin');
-        const risks = [];
-        if (delegateCall) risks.push('⚠️ Uses delegatecall (reentrancy risk)');
-        if (selfDestruct) risks.push('⚠️ Uses selfdestruct (can destroy itself)');
-        if (upgradeableProxy) risks.push('⚠️ Likely an upgradeable proxy contract');
-
-        // Assume simple honeypot check: high gas usage + no transfer method
+        const proxy = bytecode.includes('5af43d82803e903d91602b57fd5bf3');
         const isHoneypot = !bytecode.includes('a9059cbb') && bytecode.length > 2000;
 
-        // Simulated verification check (replace if REST API available)
-        const verified = size > 300;
-
-        // Score calculation
+        const verified = size > 300; // simulate
         let score = 100;
-        if (delegateCall) score -= 30;
-        if (selfDestruct) score -= 20;
-        if (isHoneypot) score -= 40;
-        if (upgradeableProxy) score -= 20;
+        const risks = [];
+        if (delegateCall) { score -= 30; risks.push('⚠️ Uses delegatecall'); }
+        if (selfDestruct) { score -= 20; risks.push('⚠️ Uses selfdestruct'); }
+        if (proxy) { score -= 25; risks.push('⚠️ Upgradeable proxy pattern'); }
+        if (isHoneypot) { score -= 40; risks.push('⚠️ Possible honeypot'); }
 
-        // Creator address from tx (optional)
-        const creatorTxRes = await fetch(SIDRA_RPC, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            jsonrpc: '2.0',
-            method: 'eth_getTransactionReceipt',
-            params: [address],
-            id: 2
-          })
-        });
-        const creatorInfo = await creatorTxRes.json();
+        const selectors = getFunctionSelectors(bytecode);
 
-        // Add results for each contract
-        results.innerHTML += `
-          <div class="bg-gray-800 p-6 rounded mb-4">
-            <h2 class="text-xl font-semibold mb-2">🔍 Scan Results for ${address}</h2>
-            <p><strong>Bytecode Size:</strong> ${size} bytes</p>
-            <p><strong>Verified:</strong> ${verified ? '✅ Yes' : '❌ No'}</p>
-            <p><strong>Honeypot:</strong> ${isHoneypot ? '⚠️ Likely' : '✅ Unlikely'}</p>
-            <p><strong>Upgradeable Proxy Risk:</strong> ${upgradeableProxy ? '⚠️ Yes' : '✅ No'}</p>
-            <p><strong>Score:</strong> <span class="${score >= 70 ? 'text-green-400' : score >= 40 ? 'text-yellow-300' : 'text-red-500'}">${score}/100</span></p>
-            ${risks.length ? '<p><strong>Risks:</strong><br>' + risks.join('<br>') + '</p>' : '<p><strong>Risks:</strong> None found ✅</p>'}
-            <p class="mt-4">
-              <a href="${EXPLORER_URL}/address/${address}" target="_blank" class="text-blue-400 underline">🔗 View on Explorer</a>
-            </p>
-          </div>
+        const features = Object.entries(selectors)
+          .filter(([_, val]) => val)
+          .map(([key]) => `✅ ${key.charAt(0).toUpperCase() + key.slice(1)}`);
+
+        const report = `
+        <div class="bg-gray-800 p-6 rounded">
+          <h2 class="text-xl font-semibold mb-2">🔍 Scan for ${address}</h2>
+          <p><strong>Bytecode Size:</strong> ${size} bytes</p>
+          <p><strong>Verified:</strong> ${verified ? '✅ Yes' : '❌ No'}</p>
+          <p><strong>Proxy:</strong> ${proxy ? '⚠️ Yes' : '✅ No'}</p>
+          <p><strong>Honeypot:</strong> ${isHoneypot ? '⚠️ Likely' : '✅ Unlikely'}</p>
+          <p><strong>Score:</strong> <span class="${score >= 70 ? 'text-green-400' : score >= 40 ? 'text-yellow-300' : 'text-red-500'}">${score}/100</span></p>
+          ${risks.length ? '<p><strong>Risks:</strong><br>' + risks.join('<br>') + '</p>' : '<p><strong>Risks:</strong> None ✅</p>'}
+          ${features.length ? '<p class="mt-2"><strong>Detected Features:</strong><br>' + features.join('<br>') + '</p>' : ''}
+          <p class="mt-4">
+            <a href="${EXPLORER_URL}/address/${address}" target="_blank" class="text-blue-400 underline">🔗 View on Explorer</a>
+          </p>
+        </div>
         `;
-      } catch (error) {
-        console.error(error);
-        results.innerHTML += '<p class="text-red-400">Error scanning contract.</p>';
+
+        results.innerHTML += report;
+        window.contractReports.push(`--- ${address} ---\nScore: ${score}/100\nRisks: ${risks.join(', ') || 'None'}\nFeatures: ${features.join(', ') || 'None'}\nExplorer: ${EXPLORER_URL}/address/${address}\n`);
+      } catch (err) {
+        results.innerHTML += `<p class="text-red-400">Error scanning ${address}</p>`;
       }
     }
 
-    function exportToPDF() {
-      const { jsPDF } = window.jspdf;
-      const doc = new jsPDF();
-      doc.text('Contract Scanner Results', 20, 10);
-      doc.text(document.getElementById('results').innerText, 20, 20);
-      doc.save('contract_scan_results.pdf');
+    function startScan() {
+      const input = document.getElementById('address').value;
+      const addresses = parseAddresses(input);
+      const results = document.getElementById('results');
+      results.innerHTML = '';
+      window.contractReports = [];
+      addresses.forEach(addr => scanContract(addr, results));
     }
 
-    function copyToClipboard() {
-      const resultsText = document.getElementById('results').innerText;
-      navigator.clipboard.writeText(resultsText).then(() => {
-        alert('Results copied to clipboard!');
-      });
+    function exportText() {
+      const text = window.contractReports.join('\n\n');
+      navigator.clipboard.writeText(text).then(() => alert('Report copied to clipboard!'));
     }
   </script>
 </body>
